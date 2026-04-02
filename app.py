@@ -278,23 +278,44 @@ def build_pivot_in_memory(data: dict, titre: str, fmt: str) -> bytes:
     ws = wb.active
     ws.title = "Pivot BC"
     
+    EAN_col       = 1
+    LIB_col       = 2
+    first_mag_col = 3
+    total_col     = 2 + len(magasins) + 1
+    
     # ── Titre ──
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=2 + len(magasins) + 1)
-    title_cell = ws.cell(1, 1, titre)
-    title_cell.font = Font(name="Arial", bold=True, color=HEADER_FG, size=12)
-    title_cell.fill = _fill(HEADER_BG)
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 22
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_col)
+    c = ws.cell(1, 1, titre)
+    c.font = Font(name="Arial", bold=True, color=HEADER_FG, size=12)
+    c.fill = _fill(HEADER_BG)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 21.95
     
     # ── En-têtes ──
-    headers = ["EAN Article", "Libellé Article"] + magasins + ["TOTAL GÉNÉRAL"]
-    for col, h in enumerate(headers, 1):
+    for col, h, wrap, rot in [
+        (EAN_col, "EAN Article", True, 0),
+        (LIB_col, "Libellé Article", True, 0),
+    ]:
         c = ws.cell(2, col, h)
         c.font = _font(bold=True, color=HEADER_FG, size=10)
         c.fill = _fill(HEADER_BG)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=wrap)
         c.border = _border()
-    ws.row_dimensions[2].height = 30
+    
+    for i, mag in enumerate(magasins):
+        c = ws.cell(2, first_mag_col + i, mag)
+        c.font = _font(bold=True, color=HEADER_FG, size=10)
+        c.fill = _fill(HEADER_BG)
+        c.alignment = Alignment(horizontal="center", vertical="center", text_rotation=90)
+        c.border = _border()
+    
+    c = ws.cell(2, total_col, "TOTAL GÉNÉRAL")
+    c.font = _font(bold=True, color=HEADER_FG, size=10)
+    c.fill = _fill(HEADER_BG)
+    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    c.border = _border()
+    
+    ws.row_dimensions[2].height = 165.0
     
     # ── Données ──
     EAN_col = 1
@@ -323,7 +344,7 @@ def build_pivot_in_memory(data: dict, titre: str, fmt: str) -> bytes:
             c.font = _font()
             c.fill = _fill(bg)
             if qty is not None:
-                c.number_format = "#,##0"
+                c.number_format = "# ###"
                 c.alignment = Alignment(horizontal="center")
         
         # Total ligne
@@ -333,47 +354,38 @@ def build_pivot_in_memory(data: dict, titre: str, fmt: str) -> bytes:
         tc.border = _border()
         tc.font = _font(bold=True)
         tc.fill = _fill(TOTAL_BG)
-        tc.number_format = "#,##0"
+        tc.number_format = "# ###"
         tc.alignment = Alignment(horizontal="center")
         rows_written.append(row_idx)
     
     # ── Ligne TOTAL GÉNÉRAL ──
     if rows_written:
-        total_row = rows_written[-1] + 1
-        ws.cell(total_row, EAN_col, "TOTAL GÉNÉRAL").font = _font(bold=True)
-        ws.cell(total_row, EAN_col).fill = _fill(TOTAL_BG)
-        ws.cell(total_row, EAN_col).border = _border()
-        ws.merge_cells(start_row=total_row, start_column=EAN_col,
-                       end_row=total_row, end_column=LIB_col)
+        tr = rows_written[-1] + 1
+        r1, r2 = rows_written[0], rows_written[-1]
         
-        for mag_idx in range(len(magasins)):
-            col = first_mag_col + mag_idx
-            col_letter = get_column_letter(col)
-            r1, r2 = rows_written[0], rows_written[-1]
-            c = ws.cell(total_row, col, f"=SUM({col_letter}{r1}:{col_letter}{r2})")
-            c.font = _font(bold=True)
-            c.fill = _fill(TOTAL_BG)
-            c.border = _border()
-            c.number_format = "#,##0"
-            c.alignment = Alignment(horizontal="center")
+        ws.merge_cells(start_row=tr, start_column=EAN_col, end_row=tr, end_column=LIB_col)
+        c = ws.cell(tr, EAN_col, "TOTAL GÉNÉRAL")
+        c.font = _font(bold=True); c.fill = _fill(TOTAL_BG); c.border = _border()
         
-        # Total général de la dernière colonne
-        tc_letter = get_column_letter(total_col)
-        gt = ws.cell(total_row, total_col,
-                     f"=SUM({tc_letter}{rows_written[0]}:{tc_letter}{rows_written[-1]})")
-        gt.font = _font(bold=True)
-        gt.fill = _fill(HEADER_BG)
-        gt.font = Font(name="Arial", bold=True, color=HEADER_FG, size=10)
-        gt.border = _border()
-        gt.number_format = "#,##0"
-        gt.alignment = Alignment(horizontal="center")
+        for i in range(len(magasins)):
+            col = first_mag_col + i
+            cl = get_column_letter(col)
+            c = ws.cell(tr, col, f"=SUM({cl}{r1}:{cl}{r2})")
+            c.font = _font(bold=True); c.fill = _fill(TOTAL_BG); c.border = _border()
+            c.number_format = "# ###"; c.alignment = Alignment(horizontal="center")
+        
+        tcl = get_column_letter(total_col)
+        c = ws.cell(tr, total_col, f"=SUM({tcl}{r1}:{tcl}{r2})")
+        c.font = Font(name="Arial", bold=True, color=HEADER_FG, size=10)
+        c.fill = _fill(HEADER_BG); c.border = _border()
+        c.number_format = "# ###"; c.alignment = Alignment(horizontal="center")
     
     # ── Largeurs colonnes ──
-    ws.column_dimensions[get_column_letter(EAN_col)].width = 16
-    ws.column_dimensions[get_column_letter(LIB_col)].width = 40
+    ws.column_dimensions[get_column_letter(EAN_col)].width = 14.14
+    ws.column_dimensions[get_column_letter(LIB_col)].width = 31.29
     for i in range(len(magasins)):
-        ws.column_dimensions[get_column_letter(first_mag_col + i)].width = 18
-    ws.column_dimensions[get_column_letter(total_col)].width = 16
+        ws.column_dimensions[get_column_letter(first_mag_col + i)].width = 3.29
+    ws.column_dimensions[get_column_letter(total_col)].width = 13.0
     
     # ── Figer les volets ──
     ws.freeze_panes = ws.cell(3, first_mag_col)
