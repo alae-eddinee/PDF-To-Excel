@@ -7,11 +7,16 @@ from datetime import datetime
 import pdfplumber
 import importlib
 
-# Import the existing functions from bc_pdf_to_pivot
+# Import and reload bc_pdf_to_pivot module
 sys.path.append('.')
 import bc_pdf_to_pivot
 importlib.reload(bc_pdf_to_pivot)
-from bc_pdf_to_pivot import detect_format, parse_marjane, parse_lv, build_pivot
+
+# Access functions through module to ensure they update on reload
+detect_format = bc_pdf_to_pivot.detect_format
+parse_marjane = bc_pdf_to_pivot.parse_marjane
+parse_lv = bc_pdf_to_pivot.parse_lv
+build_pivot = bc_pdf_to_pivot.build_pivot
 
 # Page configuration
 st.set_page_config(
