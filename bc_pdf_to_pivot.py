@@ -1,6 +1,11 @@
 """
-bc_pdf_to_pivot.py — Extraction pivot BON DE COMMANDE (Marjane & LV)
+bc_pdf_to_pivot.py — Extraction pivot BON DE COMMANDE (Marjane, Marjane-MEDIDIS & LV)
 Usage: python bc_pdf_to_pivot.py <fichier.pdf> [output.xlsx]
+
+Formats supportes:
+  - marjane  : BON DE COMMANDE Marjane classique (colonnes Livre a / MEDIDIS separees)
+  - medidis  : BON DE COMMANDE MEDIDIS / MARJANE HOLDING (colonne unique, libelle sur 2 lignes)
+  - lv       : BON DE COMMANDE Hyper Marché LV
 """
 
 import re
@@ -20,12 +25,21 @@ from openpyxl.utils import get_column_letter
 def detect_format(pdf_path: str) -> str:
     with pdfplumber.open(pdf_path) as pdf:
         text = pdf.pages[0].extract_text() or ""
-    if "MARJANE" in text.upper():
-        return "marjane"
-    if "HYPER MARCHE LV" in text.upper() or "HYPE MARCHE LV" in text.upper() or "HYPER SUD" in text.upper():
+    upper = text.upper()
+    if "HYPER MARCHE LV" in upper or "HYPE MARCHE LV" in upper or "HYPER SUD" in upper:
         return "lv"
     if "LIVREA" in text.replace(" ", "").upper():
-        return "lv"
+        # MEDIDIS format: "Commande par" / "Livre a" / "Commande a" header exists,
+        # but the store name is in the "Commande par" column (x < 180) on the MEDIDIS row.
+        # Distinguish from classic Marjane by checking the No.ligne column header.
+        if "Noligne" in text.replace(" ", "") or "No ligne" in text or "Noligne" in text:
+            return "medidis"
+        return "marjane"
+    if "MARJANE" in upper:
+        # Could be either marjane or medidis — inspect column headers
+        if "Noligne" in text.replace(" ", "") or "No.ligne" in text.replace(" ", ""):
+            return "medidis"
+        return "marjane"
     return "marjane"
 
 
@@ -41,8 +55,144 @@ def _get_rows(words, y_tolerance=3):
     return {y: sorted(ws, key=lambda w: w['x0']) for y, ws in sorted(rows.items())}
 
 
+def _normalize_magasin(raw: str) -> str:
+    """Fix merged store names: MARJANEBOUREGREG -> MARJANE BOUREGREG"""
+    s = re.sub(r'^(MARJANE)([A-Z])', r'\1 \2', raw, flags=re.I)
+    return s.strip()
+
+
+def _normalize_libelle(text: str) -> str:
+    """Fix merged libellé words: CADREPHOTOZEYNA- -> CADRE PHOTO ZEYNA-"""
+    s = re.sub(r'(CADRE)(PHOTO|MYLARD)', r'\1 \2', text, flags=re.I)
+    s = re.sub(r'(PHOTO)(ZEYNA|LEA|GULIA|RITA|FLECHE)', r'\1 \2', s, flags=re.I)
+    return s.strip()
+
+
 # ─────────────────────────────────────────────
-# PARSEUR MARJANE
+# PARSEUR MEDIDIS
+#
+# PDF structure (x positions):
+#   x ~31  : Commande par  → NOM DU MAGASIN (e.g. MARJANEBOUREGREG)
+#   x ~208 : Livre a       → same store name repeated
+#   x ~386 : Commande a    → MEDIDIS (the supplier)
+#
+# Article rows span 2 y-levels:
+#   Line 1: [30]EAN [79]LIBELLE_PART1 [160]VL [170]NO_LIGNE [226]PCB
+#            [263]Quant_UC [293]UVC/UC [324]Quant_UVC [357]OSSAGA3
+#   Line 2: [79]LIBELLE_PART2  (e.g. "10X15CM-BLANC")
+#
+# EAN can be 12 or 13 digits (some articles use 12-digit codes).
+# No.ligne is always 13 digits starting with 078... — must not be confused with EAN.
+# Quant en UVC = nums[-1] in the data row (rightmost numeric token).
+#
+# Key challenge: No.ligne (e.g. 0784313020021) is 13 digits → collides with EAN regex.
+# We disambiguate by x-position: EAN is at x < 60, No.ligne is at x ~170.
+# ─────────────────────────────────────────────
+
+def parse_medidis(pdf_path: str) -> tuple[dict, str, str]:
+    data = {}
+    date_cmd = ""
+
+    EAN_RE  = re.compile(r'^\d{12,13}$')
+    DATE_RE = re.compile(r'(\d{2}/\d{2}/\d{2,4})')
+    NUM_RE  = re.compile(r'^\d+(\.\d+)?$')
+
+    # x-position thresholds (from word-position inspection)
+    EAN_X_MAX    = 60    # EAN starts at x~30-38
+    LIBELLE_X    = 79    # libellé starts at x~79
+    NO_LIGNE_X   = 160   # No.ligne column starts at x~160
+    QTY_UVC_X    = 310   # Quant en UVC column at x~324; use 310 as left boundary
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+            if not words:
+                continue
+
+            rows = _get_rows(words)
+            sorted_ys = sorted(rows.keys())
+
+            # Date commande
+            if not date_cmd:
+                for ws in rows.values():
+                    row_str = ' '.join(w['text'] for w in ws)
+                    m = DATE_RE.search(row_str)
+                    if m and '/' in m.group(1):
+                        date_cmd = m.group(1)
+                        break
+
+            # Magasin: row where MEDIDIS appears at x~386 → take word(s) at x < 180
+            magasin = ""
+            for ws in rows.values():
+                texts_upper = [w['text'].upper() for w in ws]
+                if 'MEDIDIS' in texts_upper:
+                    store_words = [w for w in ws if w['x0'] < 180]
+                    if store_words:
+                        magasin = _normalize_magasin(store_words[0]['text'])
+                    break
+
+            if not magasin:
+                continue
+
+            # Build a lookup from y → next_y for libellé continuation
+            y_list = sorted_ys
+
+            # Parse article rows: EAN at x < EAN_X_MAX
+            for idx, y in enumerate(y_list):
+                ws = rows[y]
+                if not ws:
+                    continue
+
+                # First word must be EAN-like and positioned on the left
+                first = ws[0]
+                if first['x0'] > EAN_X_MAX:
+                    continue
+                if not EAN_RE.match(first['text']):
+                    continue
+
+                ean = first['text']
+
+                # Libellé part 1: words at x~79 up to NO_LIGNE_X, non-numeric
+                lib_part1 = " ".join(
+                    w['text'] for w in ws
+                    if LIBELLE_X - 5 <= w['x0'] < NO_LIGNE_X and not NUM_RE.match(w['text'])
+                )
+
+                # Libellé part 2: next y-row, only words at x~79 (libellé continuation)
+                lib_part2 = ""
+                if idx + 1 < len(y_list):
+                    next_y = y_list[idx + 1]
+                    next_ws = rows[next_y]
+                    # Continuation row: no EAN-like word on the left, has text at libellé x
+                    if next_ws and next_ws[0]['x0'] > EAN_X_MAX - 5:
+                        lib_part2 = " ".join(
+                            w['text'] for w in next_ws
+                            if LIBELLE_X - 5 <= w['x0'] < NO_LIGNE_X
+                        )
+
+                libelle = _normalize_libelle((lib_part1 + " " + lib_part2).strip())
+
+                # Quant en UVC: numeric token at x >= QTY_UVC_X (column ~324)
+                uvc_candidates = [
+                    w['text'] for w in ws
+                    if w['x0'] >= QTY_UVC_X and NUM_RE.match(w['text'])
+                ]
+                if not uvc_candidates:
+                    continue
+                qty = float(uvc_candidates[0])
+
+                if ean not in data:
+                    data[ean] = {"libelle": libelle}
+                data[ean][magasin] = data[ean].get(magasin, 0) + qty
+
+    titre = "BON DE COMMANDE — MEDIDIS / MARJANE HOLDING"
+    if date_cmd:
+        titre += f" — {date_cmd}"
+    return data, date_cmd, titre
+
+
+# ─────────────────────────────────────────────
+# PARSEUR MARJANE (classique)
 # Uses extract_words() with x/y positions to handle multi-column PDFs
 # where spaces between columns get merged by extract_text().
 #
@@ -123,7 +273,7 @@ def parse_marjane(pdf_path: str) -> tuple[dict, str, str]:
                 nums = [w['text'] for w in ws if NUM_RE.match(w['text'])]
                 if len(nums) < 3:
                     continue
-                qty = float(nums[-1])  # Quant en UVC
+                qty = float(nums[-1])
 
                 if ean not in data:
                     data[ean] = {"libelle": libelle}
@@ -241,12 +391,6 @@ def parse_lv(pdf_path: str) -> tuple[dict, str, str]:
 
 # ─────────────────────────────────────────────
 # CONSTRUCTION DU PIVOT EXCEL
-# Matches reference format exactly:
-#   Row 1  : titre merged, dark blue bg, white bold, height 21.95
-#   Row 2  : EAN + Libelle (wrap), magasins rotated 90deg, TOTAL header
-#            height 165pt, store cols width 3.29 (narrow)
-#   Data   : alternating white/EBF3FB, total col D6E4F0 bold
-#   Total  : TOTAL GENERAL row, grand total cell dark blue/white
 # ─────────────────────────────────────────────
 
 HEADER_BG = "1F4E79"
@@ -296,14 +440,11 @@ def build_pivot(data: dict, titre: str, output_path: str, fmt: str):
     ws.row_dimensions[1].height = 21.95
 
     # Row 2: Headers
-    for col, label, wrap, rot in [
-        (EAN_col, "EAN Article",    True,  0),
-        (LIB_col, "Libelle Article", True, 0),
-    ]:
+    for col, label in [(EAN_col, "EAN Article"), (LIB_col, "Libelle Article")]:
         c = ws.cell(2, col, label)
         c.font = _font(bold=True, color=HEADER_FG)
         c.fill = _fill(HEADER_BG)
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=wrap)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = _border()
 
     for i, mag in enumerate(magasins):
@@ -318,7 +459,6 @@ def build_pivot(data: dict, titre: str, output_path: str, fmt: str):
     c.fill = _fill(HEADER_BG)
     c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     c.border = _border()
-
     ws.row_dimensions[2].height = 165.0
 
     # Data rows
@@ -377,7 +517,6 @@ def build_pivot(data: dict, titre: str, output_path: str, fmt: str):
     ws.column_dimensions[get_column_letter(total_col)].width = 13.0
 
     ws.freeze_panes = ws.cell(3, first_mag_col)
-
     wb.save(output_path)
     print(f"Pivot genere : {output_path} | Format: {fmt.upper()} | Articles: {len(data)} | Magasins: {len(magasins)}")
 
@@ -392,7 +531,12 @@ def process_pdf(pdf_path: str, output_path: str):
         return
     fmt = detect_format(pdf_path)
     print(f"Format detecte : {fmt.upper()}")
-    data, date_cmd, titre = parse_marjane(pdf_path) if fmt == "marjane" else parse_lv(pdf_path)
+    if fmt == "medidis":
+        data, date_cmd, titre = parse_medidis(pdf_path)
+    elif fmt == "marjane":
+        data, date_cmd, titre = parse_marjane(pdf_path)
+    else:
+        data, date_cmd, titre = parse_lv(pdf_path)
     build_pivot(data, titre, output_path, fmt)
 
 
