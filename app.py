@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import os
 from datetime import datetime
+import pdfplumber
 
 # Import the existing functions from bc_pdf_to_pivot
 sys.path.append('.')
@@ -17,88 +18,118 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS - Minimal Clean Design
 st.markdown("""
 <style>
+    /* Header */
     .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1F4E79;
+        font-size: 2rem;
+        font-weight: 600;
+        color: #667eea;
         text-align: center;
+        margin: 1rem 0 0.5rem 0;
+    }
+    
+    .subtitle {
+        text-align: center;
+        color: #666;
+        font-size: 0.95rem;
         margin-bottom: 2rem;
     }
-    .upload-section {
-        background-color: #F0F8FF;
-        padding: 2rem;
-        border-radius: 10px;
-        border: 2px dashed #1F4E79;
+    
+    /* File List */
+    .file-item {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 0.8rem 1rem;
+        margin: 0.5rem 0;
+        border-left: 3px solid #667eea;
+        color: #333 !important;
     }
+    
+    .file-item div, .file-item span {
+        color: #333 !important;
+    }
+    
+    /* Button */
+    .stButton > button {
+        background: #667eea !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 0.8rem 2rem !important;
+        font-weight: 500 !important;
+    }
+    
+    .stButton > button:hover {
+        background: #5a6fd6 !important;
+    }
+    
+    /* Messages */
     .success-message {
-        background-color: #D4EDDA;
+        background: #d4edda;
         color: #155724;
         padding: 1rem;
-        border-radius: 5px;
-        border-left: 4px solid #28A745;
+        border-radius: 8px;
+        border-left: 4px solid #28a745;
     }
+    
     .error-message {
-        background-color: #F8D7DA;
-        color: #721C24;
+        background: #f8d7da;
+        color: #721c24;
         padding: 1rem;
-        border-radius: 5px;
-        border-left: 4px solid #DC3545;
+        border-radius: 8px;
+        border-left: 4px solid #dc3545;
     }
-    .info-message {
-        background-color: #D1ECF1;
-        color: #0C5460;
-        padding: 1rem;
-        border-radius: 5px;
-        border-left: 4px solid #17A2B8;
+    
+    /* Download Button */
+    .stDownloadButton > button {
+        background: #28a745 !important;
+        color: white !important;
+        border-radius: 8px !important;
+        border: none !important;
     }
+    
+    /* Hide Streamlit elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {display: none;}
 </style>
 """, unsafe_allow_html=True)
 
 def main():
-    # Header
-    st.markdown('<h1 class="main-header">📊 PDF to Excel Pivot Converter</h1>', unsafe_allow_html=True)
+    # Simple header
+    st.markdown('<h1 class="main-header">📊 PDF to Excel Converter</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="subtitle">Convert BON DE COMMANDE PDFs to Excel pivot tables</p>', unsafe_allow_html=True)
     
-    # Sidebar
-    st.sidebar.markdown("## 📋 About")
-    st.sidebar.info("""
-    This app converts BON DE COMMANDE PDF files to Excel pivot tables.
-    
-    **Supported Formats:**
-    - Marjane
-    - LV (Hyper Marché LV)
-    
-    **Features:**
-    - Automatic format detection
-    - Batch processing
-    - Download results as Excel files
-    """)
-    
-    # Main content
-    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-    
-    # File upload
+    # File upload - clean and simple
     uploaded_files = st.file_uploader(
-        "📁 Upload PDF files",
+        "Drop PDF files here",
         type=['pdf'],
-        accept_multiple_files=True,
-        help="Select one or more PDF files to convert to Excel pivot tables"
+        accept_multiple_files=True
     )
     
-    st.markdown('</div>', unsafe_allow_html=True)
-    
+    # Show files and process button
     if uploaded_files:
-        st.markdown("### 📄 Selected Files")
-        for i, file in enumerate(uploaded_files, 1):
-            st.write(f"{i}. **{file.name}** ({file.size/1024:.1f} KB)")
+        st.markdown("### Selected Files")
         
-        # Process button
-        if st.button("🚀 Generate Excel Files", type="primary", use_container_width=True):
+        for file in uploaded_files:
+            st.markdown(f'''
+            <div class="file-item">
+                📄 {file.name} ({(file.size/1024):.1f} KB)
+            </div>
+            ''', unsafe_allow_html=True)
+        
+        if st.button("Generate Excel", type="primary", use_container_width=True):
             process_uploaded_files(uploaded_files)
-    else:
-        st.markdown('<div class="info-message">ℹ️ Upload PDF files above to get started. The app will automatically detect the format and generate Excel pivot tables.</div>', unsafe_allow_html=True)
+    
+    # Sidebar - minimal
+    with st.sidebar:
+        st.markdown("### About")
+        st.markdown("Convert PDF order forms to Excel pivot tables")
+        st.markdown("**Formats:** Marjane, LV")
+        st.markdown("---")
+        st.markdown("v1.0")
 
 def process_uploaded_files(uploaded_files):
     """Process uploaded PDF files and generate Excel files"""
@@ -145,11 +176,25 @@ def process_single_pdf(pdf_path: str, filename: str) -> dict:
         # Detect format
         fmt = detect_format(pdf_path)
         
+        # Debug: log detected format
+        print(f"[DEBUG] Format detected for {filename}: {fmt}")
+        
         # Parse data
         if fmt == "marjane":
             data, date_cmd, titre = parse_marjane(pdf_path)
         else:
             data, date_cmd, titre = parse_lv(pdf_path)
+        
+        # Debug: log extracted data count
+        print(f"[DEBUG] Articles extracted: {len(data)}")
+        
+        if not data:
+            return {
+                'filename': filename,
+                'success': False,
+                'error': f"No data extracted. Format detected: {fmt.upper()}. The PDF may be scanned (image) or use an unsupported format.",
+                'format': fmt
+            }
         
         # Generate output filename
         stem = Path(filename).stem
@@ -173,6 +218,9 @@ def process_single_pdf(pdf_path: str, filename: str) -> dict:
         }
         
     except Exception as e:
+        import traceback
+        print(f"[DEBUG] Error processing {filename}: {str(e)}")
+        print(traceback.format_exc())
         return {
             'filename': filename,
             'success': False,
@@ -189,6 +237,8 @@ def build_pivot_in_memory(data: dict, titre: str, fmt: str) -> bytes:
     
     if not data:
         raise ValueError("Aucune donnée à traiter")
+    
+    print(f"[DEBUG] Building pivot with {len(data)} articles")
     
     # Style constants (same as in bc_pdf_to_pivot.py)
     HEADER_BG = "1F4E79"

@@ -37,79 +37,97 @@ def detect_format(pdf_path: str) -> str:
 # PARSEUR MARJANE (logique originale)
 # ─────────────────────────────────────────────
 
+def _get_rows(words, y_tolerance=3):
+    """Group pdfplumber words into rows by vertical position."""
+    rows = {}
+    for w in words:
+        y = round(w['top'] / y_tolerance) * y_tolerance
+        rows.setdefault(y, []).append(w)
+    return {y: sorted(ws, key=lambda w: w['x0']) for y, ws in sorted(rows.items())}
+
+
 def parse_marjane(pdf_path: str) -> tuple[dict, str, str]:
     """
     Retourne (data, date_cmd, titre)
     data = { ean: {libelle, magasin: qty, ...} }
+
+    Utilise extract_words() avec positions x/y pour éviter le problème
+    de fusion des mots dans les PDFs multi-colonnes.
+    Le PDF a 3 colonnes :
+      - Col 1 (x < ~180) : Commande par / MARJANE HOLDING
+      - Col 2 (x ~180-350) : Commande à / MEDIDIS
+      - Col 3 (x > ~350)  : Livré à / NOM DU MAGASIN  ← on veut ça
     """
     data = {}
     date_cmd = ""
 
     EAN_RE = re.compile(r'^\d{13}$')
     DATE_RE = re.compile(r'(\d{2}/\d{2}/\d{2,4})')
-    QTY_RE = re.compile(r'(\d+(?:\.\d+)?)\s*$')
+    NUM_RE = re.compile(r'^\d+(\.\d+)?$')
+
+    # X-boundary : la colonne "Livré à" commence après ~350 pts
+    LIVREA_X = 350
 
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
-            if not text:
+            words = page.extract_words(x_tolerance=3, y_tolerance=3)
+            if not words:
                 continue
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-            # Date commande
+            rows = _get_rows(words)
+
+            # ── Date commande ──
             if not date_cmd:
-                for line in lines:
-                    m = DATE_RE.search(line)
+                for ws in rows.values():
+                    row_str = ' '.join(w['text'] for w in ws)
+                    m = DATE_RE.search(row_str)
                     if m:
                         date_cmd = m.group(1)
                         break
 
-            # Nom du magasin : ligne "Livré à" ou "MARJANE ..."
+            # ── Nom du magasin : ligne contenant MEDIDIS, col 3 ──
             magasin = ""
-            for i, line in enumerate(lines):
-                upper = line.upper()
-                if "MARJANE" in upper and not any(
-                    kw in upper for kw in ["HOLDING", "MEDIDIS", "COMMANDE", "BON DE"]
-                ):
-                    # Prendre le premier token MARJANE xxx
-                    m = re.search(r'(MARJANE\s+\S+(?:\s+\S+)*)', line, re.I)
-                    if m:
-                        magasin = m.group(1).strip()
-                        break
+            for ws in rows.values():
+                texts = [w['text'].upper() for w in ws]
+                if 'MEDIDIS' in texts:
+                    livrea_words = [w for w in ws if w['x0'] > LIVREA_X]
+                    if livrea_words:
+                        raw = livrea_words[0]['text']
+                        # Réinsérer l'espace après "MARJANE" si collé
+                        raw = re.sub(r'^(MARJANE)([A-Z])', r'\1 \2', raw, flags=re.I)
+                        magasin = raw.strip()
+                    break
 
             if not magasin:
                 continue
 
-            # Articles : lignes avec EAN 13 chiffres
-            for i, line in enumerate(lines):
-                parts = line.split()
-                if not parts:
+            # ── Articles : ligne dont le 1er mot est un EAN 13 ──
+            for ws in rows.values():
+                if not ws:
                     continue
-                ean = None
-                # Chercher un EAN dans la ligne
-                for p in parts:
-                    if EAN_RE.match(p):
-                        ean = p
-                        break
-                if not ean:
+                first = ws[0]['text']
+                if not EAN_RE.match(first):
                     continue
 
-                # Quantité : dernier nombre de la ligne
-                m = QTY_RE.search(line)
-                if not m:
-                    continue
-                qty = float(m.group(1))
+                ean = first
 
-                # Libellé : tout ce qui est entre EAN et le reste
-                idx = line.index(ean)
-                after_ean = line[idx + len(ean):].strip()
-                # Retirer la quantité finale et le reste numérique
-                libelle_parts = []
-                for tok in after_ean.split():
-                    if re.match(r'^\d+(?:\.\d+)?$', tok):
+                # Libellé : mots non-numériques après l'EAN (col 1 only, x < LIVREA_X)
+                libelle_words = []
+                for w in ws[1:]:
+                    if w['x0'] >= LIVREA_X:
                         break
-                    libelle_parts.append(tok)
-                libelle = " ".join(libelle_parts).strip()
+                    if not NUM_RE.match(w['text']):
+                        libelle_words.append(w['text'])
+                    else:
+                        break
+                libelle = " ".join(libelle_words).strip()
+
+                # Quantité en UC : 3e nombre depuis la fin de la ligne
+                nums = [w['text'] for w in ws if NUM_RE.match(w['text'])]
+                if len(nums) < 3:
+                    continue
+                # Ordre attendu : ..., Quant en UC, UVC/UC, Quant en UVC
+                qty = float(nums[-3])
 
                 if ean not in data:
                     data[ean] = {"libelle": libelle}
