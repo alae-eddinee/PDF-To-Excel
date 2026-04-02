@@ -5,9 +5,12 @@ import tempfile
 import os
 from datetime import datetime
 import pdfplumber
+import importlib
 
 # Import the existing functions from bc_pdf_to_pivot
 sys.path.append('.')
+import bc_pdf_to_pivot
+importlib.reload(bc_pdf_to_pivot)
 from bc_pdf_to_pivot import detect_format, parse_marjane, parse_lv, build_pivot
 
 # Page configuration
