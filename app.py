@@ -14,8 +14,8 @@ importlib.reload(bc_pdf_to_pivot)
 
 # Access functions through module to ensure they update on reload
 detect_format = bc_pdf_to_pivot.detect_format
-parse_marjane = bc_pdf_to_pivot.parse_marjane
-parse_medidis = bc_pdf_to_pivot.parse_medidis
+parse_medidis_livrea = bc_pdf_to_pivot.parse_medidis_livrea
+parse_medidis_cmdpar = bc_pdf_to_pivot.parse_medidis_cmdpar
 parse_lv = bc_pdf_to_pivot.parse_lv
 build_pivot = bc_pdf_to_pivot.build_pivot
 
@@ -189,12 +189,15 @@ def process_single_pdf(pdf_path: str, filename: str) -> dict:
         print(f"[DEBUG] Format detected for {filename}: {fmt}")
         
         # Parse data
-        if fmt == "medidis":
-            data, date_cmd, titre = parse_medidis(pdf_path)
-        elif fmt == "marjane":
-            data, date_cmd, titre = parse_marjane(pdf_path)
-        else:
+        if fmt == "medidis_livrea":
+            data, date_cmd, titre = parse_medidis_livrea(pdf_path)
+        elif fmt == "medidis_cmdpar":
+            data, date_cmd, titre = parse_medidis_cmdpar(pdf_path)
+        elif fmt == "lv":
             data, date_cmd, titre = parse_lv(pdf_path)
+        else:
+            # Fallback
+            data, date_cmd, titre = parse_medidis_livrea(pdf_path)
         
         # Debug: log extracted data count
         print(f"[DEBUG] Articles extracted: {len(data)}")
