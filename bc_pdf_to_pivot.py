@@ -386,7 +386,7 @@ def parse_lv(pdf_path: str) -> tuple[dict, str, str]:
     data = {}
     date_cmd = ""
 
-    EAN_RE    = re.compile(r"^\d{13}$")
+    EAN_RE    = re.compile(r"^\d{5,13}$")
     DATE_RE   = re.compile(r"(\d{2}/\d{2}/(?:20\d{2}|\d{2}))(?=[:\s]|\d{2}:|$)")
     NUM_RE    = re.compile(r"^\d+(\.\d+)?$")
 
