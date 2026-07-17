@@ -50,3 +50,6 @@ pivot_*.xlsx
 # Temporary files
 *.tmp
 *.temp
+
+# Generated merge output
+ilovepdf_merged.pdf
